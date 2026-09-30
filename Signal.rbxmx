@@ -1,13 +1,13 @@
-<?xml version="1.0" encoding="utf-8"?><roblox version="4"><External>null</External><External>nil</External><Item class="Folder" referent="RBX0"><Properties><string name="Name">Signal</string></Properties><Item class="ModuleScript" referent="RBX1"><Properties><string name="Name">Config</string><ProtectedString name="Source">-- Keep this ModuleScript inside ServerScriptService/Signal.
-return {
+<?xml version="1.0" encoding="utf-8"?><roblox version="4"><External>null</External><External>nil</External><Item class="Folder" referent="RBX0"><Properties><string name="Name">Signal</string></Properties><Item class="ModuleScript" referent="RBX1"><Properties><string name="Name">Config</string><ProtectedString name="Source">return {
     Enabled = true,
-    StudioDelivery = false, -- Turn on only after adding a Studio Local Secret.
-    MinLevel = "INFO", -- DEBUG, INFO, WARN, ERROR
+    StudioDelivery = true,
+    MinLevel = "INFO",
     Console = true,
-    Transport = "Discord", -- Discord or Relay
-    WebhookId = "", -- Numeric ID from your webhook URL; NOT the token.
-    SecretName = "SIGNAL_DISCORD_TOKEN", -- Store only the webhook token as this secret.
-    RelayUrl = "", -- Optional HTTPS URL of YOUR relay, ending in /events.
+    Transport = "Discord",
+    WebhookUrl = "",
+    WebhookId = "",
+    SecretName = "SIGNAL_DISCORD_TOKEN",
+    RelayUrl = "",
     RelaySecretName = "SIGNAL_RELAY_KEY",
     FlushInterval = 5,
     MaxQueue = 200,
@@ -19,8 +19,7 @@ return {
     TrackCharacters = true,
     IncludePlayerNames = true,
 }
-</ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX2"><Properties><string name="Name">Logger</string><ProtectedString name="Source">-- Signal: server-only, best-effort structured logging. No client remotes.
-local Http = game:GetService("HttpService")
+</ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX2"><Properties><string name="Name">Logger</string><ProtectedString name="Source">local Http = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local ScriptContext = game:GetService("ScriptContext")
@@ -38,7 +37,6 @@ local function clean(value, limit)
     text = text:gsub("https://[^%s]+/api/v%d+/webhooks/[^%s]+", "[redacted webhook]")
     text = text:gsub("[%z\1-\8\11\12\14-\31]", " ")
     text = text:gsub("`", "'"):gsub("@", "＠")
-    -- Byte cap is conservative for Discord character limits; never split UTF-8.
     if #text &gt; limit then
         text = text:sub(1, limit - 3)
         while not utf8.len(text) do text = text:sub(1, -2) end
@@ -91,14 +89,14 @@ function Logger.new(config, requestOverride)
     self.Sent, self.Dropped, self.Failed, self.Suppressed = 0, 0, 0, 0
     self.Accepting, self.Running, self.InFlight = true, false, false
     self.NextAttempt, self.Attempts, self.RecentErrors = 0, 0, {}
-    self.Request = requestOverride -- Used only by the offline Studio tests.
+    self.Request = requestOverride
     self.Deliver = config.Enabled ~= false and (not RunService:IsStudio() or config.StudioDelivery == true)
     if requestOverride then self.Deliver = true end
     return self
 end
 
 function Logger:_notice(message)
-    warn("[Signal/internal] " .. message) -- No URL, body, exception, or secret is printed.
+    warn("[Signal/internal] " .. message)
 end
 
 function Logger:Log(level, event, message, details)
@@ -114,10 +112,10 @@ function Logger:Log(level, event, message, details)
         local line = "[Signal] [" .. level .. "] " .. entry.Event .. " | " .. entry.Message
         if level == "WARN" or level == "ERROR" then warn(line) else print(line) end
     end
-    if not self.Deliver then return true end -- Output-only mode never accumulates a queue.
+    if not self.Deliver then return true end
     if #self.Queue &gt;= self.Config.MaxQueue then
         self.Dropped = self.Dropped + 1
-        return false -- Preserve the oldest events, including any batch already in flight.
+        return false
     end
     table.insert(self.Queue, entry)
     return true
@@ -136,7 +134,7 @@ function Logger:Timed(event, callback, ...)
         return true, table.unpack(results, 2, results.n)
     end
     self:Error(event, clean(results[2], 150), { elapsedMs = math.floor((os.clock() - start) * 1000) })
-    return false, results[2] -- Does not rethrow; caller decides how to handle the error.
+    return false, results[2]
 end
 
 function Logger:_payload(count)
@@ -166,15 +164,33 @@ end
 
 function Logger:_configureTransport()
     if self.Request then return true end
+    if Http.HttpEnabled == false then
+        self.Deliver = false
+        self:_notice("Delivery disabled: enable Allow HTTP Requests in Experience Settings &gt; Security, then restart the test.")
+        return false
+    end
+    local setupHint = "check webhook configuration"
     local ok = pcall(function()
         if self.Config.Transport == "Relay" then
+            setupHint = "check RelayUrl and your relay Secret/Local Secret"
             assert(type(self.Config.RelayUrl) == "string" and self.Config.RelayUrl:match("^https://"), "HTTPS required")
             self.Url = self.Config.RelayUrl
             self.Headers = {
                 ["Content-Type"] = "application/json",
                 ["Authorization"] = Http:GetSecret(self.Config.RelaySecretName):AddPrefix("Bearer "),
             }
+        elseif type(self.Config.WebhookUrl) == "string" and self.Config.WebhookUrl:match("%S") then
+            setupHint = "paste a valid FULL Discord webhook URL into Config.WebhookUrl"
+            local url = self.Config.WebhookUrl:match("^%s*(.-)%s*$")
+            url = url:match("^[^?#]+") or ""
+            url = url:gsub("^https://discordapp%.com/", "https://discord.com/")
+            local base = url:match("^https://discord%.com/api/webhooks/%d+/[%w_%-]+$")
+                or url:match("^https://discord%.com/api/v%d+/webhooks/%d+/[%w_%-]+$")
+            assert(base, "Invalid webhook URL")
+            self.Url = base .. "?wait=true"
+            self.Headers = { ["Content-Type"] = "application/json" }
         else
+            setupHint = "paste your full URL into Config.WebhookUrl, or configure WebhookId and Secret/Local Secret"
             assert(type(self.Config.WebhookId) == "string" and self.Config.WebhookId:match("^%d+$"), "Webhook ID required")
             self.Url = Http:GetSecret(self.Config.SecretName)
                 :AddPrefix("https://discord.com/api/webhooks/" .. self.Config.WebhookId .. "/")
@@ -184,7 +200,7 @@ function Logger:_configureTransport()
     end)
     if not ok then
         self.Deliver = false
-        self:_notice("Delivery disabled: check config, HTTP permission, and Secret/Local Secret settings. Output still works.")
+        self:_notice("Delivery disabled: " .. setupHint .. ". Output still works.")
     end
     return ok
 end
@@ -241,7 +257,6 @@ function Logger:GetStats()
 end
 
 function Logger:_capture(level, event, message, details)
-    -- Bounded 10-second error/warning deduplication; no growing fingerprint cache.
     local now = os.clock()
     if not self.ErrorWindow or now - self.ErrorWindow &gt;= 10 then
         self.ErrorWindow, self.RecentErrors = now, {}
@@ -349,7 +364,6 @@ function Logger:Stop(timeout)
         self:Step()
         task.wait(0.1)
     end
-    -- In-flight HTTP cannot be forcibly cancelled; shutdown delivery is best effort.
 end
 
 function Logger.Get()
@@ -360,12 +374,9 @@ function Logger.Get()
     return singleton
 end
 return Logger
-</ProtectedString></Properties></Item><Item class="Script" referent="RBX3"><Properties><string name="Name">Bootstrap</string><ProtectedString name="Source">-- The only automatically running script. Config and Logger are ModuleScripts.
-local Logger = require(script.Parent.Logger)
+</ProtectedString></Properties></Item><Item class="Script" referent="RBX3"><Properties><string name="Name">Bootstrap</string><ProtectedString name="Source">local Logger = require(script.Parent.Logger)
 Logger.Get()
-</ProtectedString><bool name="Disabled">false</bool></Properties></Item><Item class="ModuleScript" referent="RBX4"><Properties><string name="Name">SmokeTests</string><ProtectedString name="Source">-- ModuleScript: Signal/SmokeTests. No HTTP requests are made.
--- Studio server Command Bar: require(game.ServerScriptService.Signal.SmokeTests)()
-return function()
+</ProtectedString><bool name="Disabled">false</bool></Properties></Item><Item class="ModuleScript" referent="RBX4"><Properties><string name="Name">SmokeTests</string><ProtectedString name="Source">return function()
     local Logger = require(script.Parent.Logger)
     local Config = require(script.Parent.Config)
     local function make(responder, overrides)
@@ -438,7 +449,19 @@ return function()
     end)
     for _ = 1, 6 do unicode:Info(string.rep("界", 100), string.rep("界", 300), { x = string.rep("界", 300) }) end
     assert(unicode:Step(), "unicode batch")
-    print("[Signal tests] 10 test groups passed. No network requests sent.")
+    local urlConfig = table.clone(Config)
+    urlConfig.WebhookUrl = " https://discord.com/api/webhooks/123/DUMMY_TOKEN?wait=false "
+    local direct = Logger.new(urlConfig)
+    local http = game:GetService("HttpService")
+    if http.HttpEnabled ~= false then
+        assert(direct:_configureTransport(), "full URL setup without secrets")
+        assert(direct.Url == "https://discord.com/api/webhooks/123/DUMMY_TOKEN?wait=true", "URL normalization")
+        urlConfig.WebhookUrl = "https://discord.com.evil.example/api/webhooks/123/DUMMY"
+        local invalid = Logger.new(urlConfig)
+        assert(not invalid:_configureTransport(), "reject non-Discord host")
+        assert(not invalid.Deliver, "bad URL disables delivery")
+    end
+    print("[Signal tests] 11 test groups passed (URL setup checks require HTTP enabled). No network requests sent.")
     return true
 end
 </ProtectedString></Properties></Item></Item></roblox>

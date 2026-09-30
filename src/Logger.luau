@@ -1,4 +1,3 @@
--- Signal: server-only, best-effort structured logging. No client remotes.
 local Http = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
@@ -17,7 +16,6 @@ local function clean(value, limit)
     text = text:gsub("https://[^%s]+/api/v%d+/webhooks/[^%s]+", "[redacted webhook]")
     text = text:gsub("[%z\1-\8\11\12\14-\31]", " ")
     text = text:gsub("`", "'"):gsub("@", "＠")
-    -- Byte cap is conservative for Discord character limits; never split UTF-8.
     if #text > limit then
         text = text:sub(1, limit - 3)
         while not utf8.len(text) do text = text:sub(1, -2) end
@@ -70,14 +68,14 @@ function Logger.new(config, requestOverride)
     self.Sent, self.Dropped, self.Failed, self.Suppressed = 0, 0, 0, 0
     self.Accepting, self.Running, self.InFlight = true, false, false
     self.NextAttempt, self.Attempts, self.RecentErrors = 0, 0, {}
-    self.Request = requestOverride -- Used only by the offline Studio tests.
+    self.Request = requestOverride
     self.Deliver = config.Enabled ~= false and (not RunService:IsStudio() or config.StudioDelivery == true)
     if requestOverride then self.Deliver = true end
     return self
 end
 
 function Logger:_notice(message)
-    warn("[Signal/internal] " .. message) -- No URL, body, exception, or secret is printed.
+    warn("[Signal/internal] " .. message)
 end
 
 function Logger:Log(level, event, message, details)
@@ -93,10 +91,10 @@ function Logger:Log(level, event, message, details)
         local line = "[Signal] [" .. level .. "] " .. entry.Event .. " | " .. entry.Message
         if level == "WARN" or level == "ERROR" then warn(line) else print(line) end
     end
-    if not self.Deliver then return true end -- Output-only mode never accumulates a queue.
+    if not self.Deliver then return true end
     if #self.Queue >= self.Config.MaxQueue then
         self.Dropped = self.Dropped + 1
-        return false -- Preserve the oldest events, including any batch already in flight.
+        return false
     end
     table.insert(self.Queue, entry)
     return true
@@ -115,7 +113,7 @@ function Logger:Timed(event, callback, ...)
         return true, table.unpack(results, 2, results.n)
     end
     self:Error(event, clean(results[2], 150), { elapsedMs = math.floor((os.clock() - start) * 1000) })
-    return false, results[2] -- Does not rethrow; caller decides how to handle the error.
+    return false, results[2]
 end
 
 function Logger:_payload(count)
@@ -145,15 +143,33 @@ end
 
 function Logger:_configureTransport()
     if self.Request then return true end
+    if Http.HttpEnabled == false then
+        self.Deliver = false
+        self:_notice("Delivery disabled: enable Allow HTTP Requests in Experience Settings > Security, then restart the test.")
+        return false
+    end
+    local setupHint = "check webhook configuration"
     local ok = pcall(function()
         if self.Config.Transport == "Relay" then
+            setupHint = "check RelayUrl and your relay Secret/Local Secret"
             assert(type(self.Config.RelayUrl) == "string" and self.Config.RelayUrl:match("^https://"), "HTTPS required")
             self.Url = self.Config.RelayUrl
             self.Headers = {
                 ["Content-Type"] = "application/json",
                 ["Authorization"] = Http:GetSecret(self.Config.RelaySecretName):AddPrefix("Bearer "),
             }
+        elseif type(self.Config.WebhookUrl) == "string" and self.Config.WebhookUrl:match("%S") then
+            setupHint = "paste a valid FULL Discord webhook URL into Config.WebhookUrl"
+            local url = self.Config.WebhookUrl:match("^%s*(.-)%s*$")
+            url = url:match("^[^?#]+") or ""
+            url = url:gsub("^https://discordapp%.com/", "https://discord.com/")
+            local base = url:match("^https://discord%.com/api/webhooks/%d+/[%w_%-]+$")
+                or url:match("^https://discord%.com/api/v%d+/webhooks/%d+/[%w_%-]+$")
+            assert(base, "Invalid webhook URL")
+            self.Url = base .. "?wait=true"
+            self.Headers = { ["Content-Type"] = "application/json" }
         else
+            setupHint = "paste your full URL into Config.WebhookUrl, or configure WebhookId and Secret/Local Secret"
             assert(type(self.Config.WebhookId) == "string" and self.Config.WebhookId:match("^%d+$"), "Webhook ID required")
             self.Url = Http:GetSecret(self.Config.SecretName)
                 :AddPrefix("https://discord.com/api/webhooks/" .. self.Config.WebhookId .. "/")
@@ -163,7 +179,7 @@ function Logger:_configureTransport()
     end)
     if not ok then
         self.Deliver = false
-        self:_notice("Delivery disabled: check config, HTTP permission, and Secret/Local Secret settings. Output still works.")
+        self:_notice("Delivery disabled: " .. setupHint .. ". Output still works.")
     end
     return ok
 end
@@ -220,7 +236,6 @@ function Logger:GetStats()
 end
 
 function Logger:_capture(level, event, message, details)
-    -- Bounded 10-second error/warning deduplication; no growing fingerprint cache.
     local now = os.clock()
     if not self.ErrorWindow or now - self.ErrorWindow >= 10 then
         self.ErrorWindow, self.RecentErrors = now, {}
@@ -328,7 +343,6 @@ function Logger:Stop(timeout)
         self:Step()
         task.wait(0.1)
     end
-    -- In-flight HTTP cannot be forcibly cancelled; shutdown delivery is best effort.
 end
 
 function Logger.Get()
