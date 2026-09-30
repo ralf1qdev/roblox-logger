@@ -1,5 +1,3 @@
--- ModuleScript: Signal/SmokeTests. No HTTP requests are made.
--- Studio server Command Bar: require(game.ServerScriptService.Signal.SmokeTests)()
 return function()
     local Logger = require(script.Parent.Logger)
     local Config = require(script.Parent.Config)
@@ -73,6 +71,18 @@ return function()
     end)
     for _ = 1, 6 do unicode:Info(string.rep("界", 100), string.rep("界", 300), { x = string.rep("界", 300) }) end
     assert(unicode:Step(), "unicode batch")
-    print("[Signal tests] 10 test groups passed. No network requests sent.")
+    local urlConfig = table.clone(Config)
+    urlConfig.WebhookUrl = " https://discord.com/api/webhooks/123/DUMMY_TOKEN?wait=false "
+    local direct = Logger.new(urlConfig)
+    local http = game:GetService("HttpService")
+    if http.HttpEnabled ~= false then
+        assert(direct:_configureTransport(), "full URL setup without secrets")
+        assert(direct.Url == "https://discord.com/api/webhooks/123/DUMMY_TOKEN?wait=true", "URL normalization")
+        urlConfig.WebhookUrl = "https://discord.com.evil.example/api/webhooks/123/DUMMY"
+        local invalid = Logger.new(urlConfig)
+        assert(not invalid:_configureTransport(), "reject non-Discord host")
+        assert(not invalid.Deliver, "bad URL disables delivery")
+    end
+    print("[Signal tests] 11 test groups passed (URL setup checks require HTTP enabled). No network requests sent.")
     return true
 end

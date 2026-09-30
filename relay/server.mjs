@@ -1,4 +1,3 @@
-// Optional YOUR-host relay. Node 22+. Put behind HTTPS; no public relay dependency.
 import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 const webhook = process.env.DISCORD_WEBHOOK_URL;
@@ -34,7 +33,6 @@ http.createServer(async (req, res) => {
     try { payload = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
     catch { return reply(res, 400, {error:'Invalid JSON'}); }
     if(!Array.isArray(payload.embeds) || payload.embeds.length !== 1) return reply(res, 400, {error:'Expected one embed'});
-    // Discard all unsolicited fields and force mention suppression.
     const upstream = await fetch(destination, {
       method:'POST', headers:{'Content-Type':'application/json'},
       body:JSON.stringify({username:'Signal', embeds:payload.embeds, allowed_mentions:{parse:[]}}),
