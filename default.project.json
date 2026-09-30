@@ -1,0 +1,15 @@
+{
+  "name": "Signal",
+  "tree": {
+    "$className": "DataModel",
+    "ServerScriptService": {
+      "Signal": {
+        "$className": "Folder",
+        "Config": {"$path": "src/Config.luau"},
+        "Logger": {"$path": "src/Logger.luau"},
+        "Bootstrap": {"$path": "src/Bootstrap.server.luau"},
+        "SmokeTests": {"$path": "tests/SmokeTests.luau"}
+      }
+    }
+  }
+}

@@ -1,0 +1,2 @@
+Generated with the built-in image-generation tool.
+Prompt: Clean premium GitHub README banner for SIGNAL, a Roblox Luau event logger with Discord webhook delivery. Wide 3:1 midnight navy composition, restrained blue/cyan accents, abstract stacked event cards and signal line. Exact text: SIGNAL; Roblox Logger; Game events. Debugging. Discord. No Roblox or Discord logos, characters, or fake UI screenshots.
